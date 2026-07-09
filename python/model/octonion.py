@@ -83,10 +83,10 @@ class OctonionLinear(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B_dims = x.shape[:-1]
         x_oct  = x.view(*B_dims, self.in_oct, 8)
-        # products: [..., out_oct, in_oct, 8, 8]
+        # products[..., o, i, a, b] = weight[o, i, a] * x[..., i, b] * sign[a, b]
         products = (
             self.weight.unsqueeze(-1) *
-            x_oct.unsqueeze(-4).unsqueeze(-1) *
+            x_oct.unsqueeze(-3).unsqueeze(-2) *
             self.sign
         )
         out = torch.zeros(*B_dims, self.out_oct, 8, device=x.device, dtype=x.dtype)

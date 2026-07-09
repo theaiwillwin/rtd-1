@@ -16,11 +16,16 @@ def test_anticommutativity():
 
 
 def test_non_associativity():
-    """Octonions are deliberately non-associative — confirm this, don't fix it."""
+    """Octonions are deliberately non-associative — confirm this, don't fix it.
+
+    NOTE: the triple must NOT lie on a single Fano line — units on one line
+    generate a quaternion subalgebra, which IS associative. (e1,e2,e3) sits
+    on line (0,1,2) and associates; (e1,e2,e5) does not.
+    """
     S, I = OCTONION_SIGN, OCTONION_INDEX
     ab_s, ab_i = S[1, 2], I[1, 2]
-    abc_s, abc_i = ab_s * S[ab_i, 3], I[ab_i, 3]
-    bc_s, bc_i = S[2, 3], I[2, 3]
+    abc_s, abc_i = ab_s * S[ab_i, 5], I[ab_i, 5]
+    bc_s, bc_i = S[2, 5], I[2, 5]
     a_bc_s = S[1, bc_i] * bc_s
     assert (abc_s != a_bc_s).item(), "Octonions should be non-associative"
 
