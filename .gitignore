@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+*.pt
+*.bin
+checkpoints/*
+!checkpoints/.gitkeep
+fpga_weights/*
+!fpga_weights/.gitkeep
+.ipynb_checkpoints/
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
