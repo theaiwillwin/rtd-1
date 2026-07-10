@@ -195,9 +195,31 @@ def main():
     if args.resume:
         ckpt = torch.load(args.resume, map_location=args.device, weights_only=False)
         model.load_state_dict(ckpt["model_state_dict"])
+        bad_weights = [k for k, v in ckpt["model_state_dict"].items()
+                       if torch.is_tensor(v) and not torch.isfinite(v).all()]
+        if bad_weights:
+            print(f"WARNING: checkpoint has non-finite model weights (likely a gradient "
+                  f"explosion baked in before resume-safety was added): {bad_weights}. "
+                  f"Optimizer-state sanitization below cannot fix this -- consider "
+                  f"resuming from an earlier checkpoint or starting fresh instead.")
         model.load_field_state_dict(ckpt["field_state"])
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         step = ckpt["step"]
+        # A checkpoint saved mid-gradient-explosion can carry non-finite Adam
+        # moments: clip_grad_norm_ scales an inf-valued grad by ~0, and
+        # 0 * inf = nan, which then poisons exp_avg/exp_avg_sq forever
+        # regardless of later gradients. Scrub any such entries so a bad
+        # checkpoint doesn't permanently disable the parameters it touched.
+        sanitized = 0
+        for state in optimizer.state.values():
+            for key in ("exp_avg", "exp_avg_sq"):
+                t = state.get(key)
+                if t is not None and not torch.isfinite(t).all():
+                    t.masked_fill_(~torch.isfinite(t), 0.0)
+                    sanitized += 1
+        if sanitized:
+            print(f"sanitized {sanitized} non-finite Adam moment tensors "
+                  f"(checkpoint saved during a gradient explosion)")
         print(f"resumed from {args.resume} at step {step} "
               f"(re-enters the epoch stream from the top)")
 
@@ -226,7 +248,16 @@ def main():
             if log_step:
                 before = [p.detach().clone() for group in optimizer.param_groups
                           for p in group["params"]]
-            optimizer.step()
+            # clip_grad_norm_ scales by clip/(grad_norm+eps); if grad_norm is
+            # inf that coefficient collapses to 0, and 0 * inf = nan, which
+            # would otherwise get written into params and Adam's moments
+            # permanently. Skip the update entirely instead.
+            if torch.isfinite(grad_norm):
+                optimizer.step()
+            else:
+                optimizer.zero_grad()
+                if log_step:
+                    print(f"step {step:>6} | skipped optimizer step (non-finite grad_norm)")
 
             model.detach_persistent_state()  # after EVERY batch, no exceptions
             model.update_curvature(step)

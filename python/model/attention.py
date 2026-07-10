@@ -56,7 +56,13 @@ class FanoSparseAttention(nn.Module):
 
         scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.head_dim)
         if curvature is not None:
-            scores = scores * (1.0 + self.curvature_scale * float(curvature))
+            # curvature_scale is learned and unbounded; without tanh it can
+            # drift under gradient descent and, multiplied by the annealed
+            # curvature (which itself grows 0.1->2.0 over training), spiral
+            # into a runaway multiplicative gain on the pre-softmax scores.
+            # tanh caps the multiplier to a fixed range regardless of drift.
+            scores = scores * (1.0 + torch.tanh(self.curvature_scale) * float(curvature))
+        scores = scores.clamp(-50.0, 50.0)
 
         fano_mask   = self._build_fano_mask(T, x.device)
         causal_mask = torch.triu(torch.ones(T, T, device=x.device), diagonal=1).bool()
