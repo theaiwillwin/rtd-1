@@ -1,8 +1,16 @@
 """
 CWD-PHFT training loop.
 
-Loss:      L_total = L_lm + energy_weight * V.mean()   (energy_weight ~ 0.01)
+Loss:      L_total = L_lm + energy_weight * (V.mean() + V.pow(2).mean())
 Optimizer: model.build_optimizer() — identity field projection at lr * 0.01.
+
+Energy-term note: the handoff's raw form L_lm + lambda*V.mean() has no
+floor on V, and in practice the optimizer mines it: by step ~570 of the
+first full run V had diverged past -7000, grad norm hit ~60x the clip,
+and the clipped LM gradient stalled (lm_loss plateaued while
+update_ratio collapsed 10x). The added quadratic bounds the minimum at
+V ~ -0.5 while preserving "low energy on observed data". Restore the
+original behavior exactly with --energy-reg none.
 Curvature: annealed 0.1 -> 2.0 over 10k steps via model.update_curvature().
 
 Persistent-state protocol (see model/cwd_phft.py):
@@ -56,6 +64,8 @@ def parse_args():
     p.add_argument("--weight-decay",  type=float, default=0.01)
     p.add_argument("--grad-clip",     type=float, default=1.0)
     p.add_argument("--energy-weight", type=float, default=0.01)
+    p.add_argument("--energy-reg",    choices=["sq", "none"], default="sq",
+                   help="'sq' bounds the energy term (V + V^2); 'none' is the raw handoff loss")
     # Run control
     p.add_argument("--dataset",    choices=["wikitext", "synthetic"], default="wikitext")
     p.add_argument("--steps",      type=int, default=10000, help="Total optimizer steps")
@@ -64,6 +74,10 @@ def parse_args():
     p.add_argument("--eval-batches", type=int, default=50)
     p.add_argument("--ckpt-every", type=int, default=1000)
     p.add_argument("--ckpt-dir",   type=str, default="checkpoints")
+    p.add_argument("--keep-ckpts", type=int, default=3,
+                   help="Keep only the newest N step checkpoints (0 = keep all)")
+    p.add_argument("--resume",     type=str, default=None,
+                   help="Checkpoint path to resume from (model+field+optimizer+step)")
     p.add_argument("--device",     type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--seed",       type=int, default=0)
     p.add_argument("--wandb",      action="store_true", help="Log to Weights & Biases")
@@ -86,12 +100,16 @@ def build_loaders(args):
     return train, val
 
 
-def lm_and_energy_loss(model, ids, decay_override, energy_weight, vocab_size):
+def lm_and_energy_loss(model, ids, decay_override, energy_weight, vocab_size,
+                       energy_reg: str = "sq"):
     logits, energy = model(ids, decay_override=decay_override, return_energy=True)
     lm_loss = F.cross_entropy(
         logits[:, :-1].reshape(-1, vocab_size), ids[:, 1:].reshape(-1)
     )
-    return lm_loss, energy, lm_loss + energy_weight * energy.mean()
+    energy_term = energy.mean()
+    if energy_reg == "sq":
+        energy_term = energy_term + energy.pow(2).mean()
+    return lm_loss, energy, lm_loss + energy_weight * energy_term
 
 
 @torch.no_grad()
@@ -107,7 +125,7 @@ def evaluate(model, loader, args):
         ids = batch["input_ids"].to(args.device)
         lm_loss, _, _ = lm_and_energy_loss(
             model, ids, 0.5 if batch["new_doc_frac"] > 0 else None,
-            args.energy_weight, args.vocab_size,
+            args.energy_weight, args.vocab_size, args.energy_reg,
         )
         model.detach_persistent_state()
         total_nll += lm_loss.item()
@@ -136,6 +154,15 @@ def save_checkpoint(model, optimizer, step, args, tag):
         "optimizer_state_dict": optimizer.state_dict(),
         "args":                 vars(args),
     }, path)
+    if args.keep_ckpts > 0:
+        import glob, re
+        steps = []
+        for p in glob.glob(os.path.join(args.ckpt_dir, "cwd_phft_step*.pt")):
+            m = re.search(r"step(\d+)\.pt$", p)
+            if m:
+                steps.append((int(m.group(1)), p))
+        for _, stale in sorted(steps)[:-args.keep_ckpts]:
+            os.remove(stale)
     return path
 
 
@@ -164,10 +191,23 @@ def main():
     optimizer = model.build_optimizer(base_lr=args.lr, weight_decay=args.weight_decay)
     model.train()
 
-    step, t_last, tokens_since = 0, time.time(), 0
+    step = 0
+    if args.resume:
+        ckpt = torch.load(args.resume, map_location=args.device, weights_only=False)
+        model.load_state_dict(ckpt["model_state_dict"])
+        model.load_field_state_dict(ckpt["field_state"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        step = ckpt["step"]
+        print(f"resumed from {args.resume} at step {step} "
+              f"(re-enters the epoch stream from the top)")
+
+    t_last, tokens_since = time.time(), 0
+    fresh_epoch = args.resume is None  # keep restored field state on first pass
     while step < args.steps:
         # Epoch boundary = the one genuine "new conversation" in LM pretraining
-        model.reset_persistent_state()
+        if fresh_epoch:
+            model.reset_persistent_state()
+        fresh_epoch = True
         for batch in train_loader:
             if step >= args.steps:
                 break
@@ -175,7 +215,8 @@ def main():
             decay_override = 0.5 if batch["new_doc_frac"] > 0 else None
 
             lm_loss, energy, loss = lm_and_energy_loss(
-                model, ids, decay_override, args.energy_weight, args.vocab_size
+                model, ids, decay_override, args.energy_weight, args.vocab_size,
+                args.energy_reg,
             )
             optimizer.zero_grad()
             loss.backward()
