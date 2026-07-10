@@ -13,3 +13,5 @@ fpga_weights/*
 .mypy_cache/
 .pytest_cache/
 training.log
+logs/
+wandb/

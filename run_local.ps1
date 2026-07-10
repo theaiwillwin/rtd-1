@@ -26,10 +26,33 @@ if ($LASTEXITCODE -ne 0) {
     & $py -m pip install --upgrade pip
     & $py -m pip uninstall -y torch 2>$null
     & $py -m pip install torch --index-url https://download.pytorch.org/whl/cu118
-    & $py -m pip install -r requirements.txt -r requirements-dev.txt
 }
+# Always ensure the rest of the deps (wandb included) are present -- this
+# used to live inside the CPU-torch branch above, so a venv that already
+# had a working CUDA torch would silently skip installing everything else.
+& $py -m pip install -r requirements.txt -r requirements-dev.txt
 & $py -c "import torch; assert torch.cuda.is_available(), 'CUDA not available - check nvidia-smi and that torch is a +cu118 build'; print('GPU:', torch.cuda.get_device_name(0))"
 if ($LASTEXITCODE -ne 0) { throw "GPU check failed - aborting before training." }
+
+# --- wandb --------------------------------------------------------------
+# Logs everything (loss, energy, grad norm, per-layer memory/velocity/
+# curvature_scale diagnostics) to Weights & Biases. Online logging needs
+# WANDB_API_KEY set once (from wandb.ai/authorize) -- e.g.
+#   $env:WANDB_API_KEY = "..."
+# before running this script. Without it, fall back to offline mode so the
+# run never hangs waiting on an interactive login prompt; `wandb sync
+# wandb\offline-run-...` uploads it later once you do have a key.
+$wandbArgs = @("--wandb")
+if (-not $env:WANDB_API_KEY) {
+    Write-Host "wandb: WANDB_API_KEY not set -- running in offline mode (set it and re-run, or 'wandb sync' the offline run later)"
+    $env:WANDB_MODE = "offline"
+}
+
+# --- console log backstop ------------------------------------------------
+# Belt-and-suspenders: keep a plain timestamped log file regardless of
+# wandb, since scrolled-away console output is otherwise unrecoverable.
+New-Item -ItemType Directory -Force -Path "logs" | Out-Null
+$logFile = "logs\train_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 
 # --- data (GitHub mirrors, cached after first download) ----------------
 New-Item -ItemType Directory -Force -Path "data\wikitext-2", "data\gpt2-tokenizer" | Out-Null
@@ -58,8 +81,9 @@ if ($latest) {
 }
 
 # --- train -------------------------------------------------------------
+Write-Host "Logging console output to $logFile"
 & $py python\training\train.py `
     --dataset wikitext --steps 10000 `
     --log-every 10 --eval-every 500 --eval-batches 10 `
     --ckpt-every 200 --keep-ckpts 3 --ckpt-dir checkpoints `
-    @resume @args
+    @wandbArgs @resume @args 2>&1 | Tee-Object -FilePath $logFile

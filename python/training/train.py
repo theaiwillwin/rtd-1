@@ -278,6 +278,10 @@ def main():
                     "tokens_per_sec": tokens_since / max(now - t_last, 1e-9),
                 }
                 metrics.update({f"field/{k}": v for k, v in model.field.last_metrics.items()})
+                for i, layer in enumerate(model.layers):
+                    metrics[f"layer{i}/mem_norm"]      = layer.memory.memory_bank.norm().item()
+                    metrics[f"layer{i}/velocity_norm"]  = layer.momentum.velocity.norm().item()
+                    metrics[f"layer{i}/curvature_scale"] = layer.attn.curvature_scale.item()
                 t_last, tokens_since = now, 0
                 print(f"step {step:>6} | lm {metrics['lm_loss']:.4f} | "
                       f"E {metrics['energy']:.4f} | c {metrics['curvature']:.3f} | "
