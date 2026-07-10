@@ -18,14 +18,18 @@ if (-not (Test-Path ".venv")) {
 $py = ".\.venv\Scripts\python.exe"
 
 # --- dependencies -----------------------------------------------------
-& $py -c "import torch" 2>$null
+# A pre-existing venv may hold a CPU-only torch (plain `pip install torch`
+# on Windows): detect that and replace it with the cu118 build.
+& $py -c "import torch; exit(0 if torch.cuda.is_available() else 1)" 2>$null
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "Installing CUDA 11.8 torch (plain pip would give CPU-only)..."
+    Write-Host "Installing CUDA 11.8 torch (replacing any CPU-only build)..."
     & $py -m pip install --upgrade pip
+    & $py -m pip uninstall -y torch 2>$null
     & $py -m pip install torch --index-url https://download.pytorch.org/whl/cu118
     & $py -m pip install -r requirements.txt -r requirements-dev.txt
 }
 & $py -c "import torch; assert torch.cuda.is_available(), 'CUDA not available - check nvidia-smi and that torch is a +cu118 build'; print('GPU:', torch.cuda.get_device_name(0))"
+if ($LASTEXITCODE -ne 0) { throw "GPU check failed - aborting before training." }
 
 # --- data (GitHub mirrors, cached after first download) ----------------
 New-Item -ItemType Directory -Force -Path "data\wikitext-2", "data\gpt2-tokenizer" | Out-Null
