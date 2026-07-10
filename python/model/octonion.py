@@ -79,26 +79,22 @@ class OctonionLinear(nn.Module):
         sign, index = build_octonion_table()
         self.register_buffer("sign",  sign)
         self.register_buffer("index", index)
+        # Structure tensor C[a,b,k] = sign[a,b] if index[a,b]==k else 0.
+        # Folding C into the compressed weight yields the equivalent dense
+        # matrix, so forward is a single matmul instead of materializing the
+        # [..., out_oct, in_oct, 8, 8] products tensor (which costs gigabytes
+        # at dim=512 batch sizes). Same math, only the summation order moves.
+        struct = torch.zeros(8, 8, 8)
+        for a in range(8):
+            for b in range(8):
+                struct[a, b, index[a, b]] = sign[a, b]
+        self.register_buffer("struct", struct)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B_dims = x.shape[:-1]
-        x_oct  = x.view(*B_dims, self.in_oct, 8)
-        # products[..., o, i, a, b] = weight[o, i, a] * x[..., i, b] * sign[a, b]
-        products = (
-            self.weight.unsqueeze(-1) *
-            x_oct.unsqueeze(-3).unsqueeze(-2) *
-            self.sign
-        )
-        out = torch.zeros(*B_dims, self.out_oct, 8, device=x.device, dtype=x.dtype)
-        for k in range(8):
-            mask = (self.index == k)
-            out[..., k] = products[..., mask].view(
-                *B_dims, self.out_oct, self.in_oct, -1
-            ).sum(dim=(-1, -2))
-        out = out.view(*B_dims, self.out_oct * 8)
-        if self.bias is not None:
-            out = out + self.bias
-        return out
+        # dense[o*8+k, i*8+b] = sum_a weight[o,i,a] * C[a,b,k]
+        dense = torch.einsum('oia,abk->okib', self.weight, self.struct)
+        dense = dense.reshape(self.out_oct * 8, self.in_oct * 8)
+        return torch.nn.functional.linear(x, dense, self.bias)
 
 
 if __name__ == "__main__":

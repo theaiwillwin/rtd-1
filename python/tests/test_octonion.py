@@ -37,6 +37,37 @@ def test_compression_ratio():
     assert 7.5 < ratio < 8.5, f"Expected ~8x compression, got {ratio:.2f}x"
 
 
+def test_forward_matches_naive_reference():
+    """The matmul-folded forward must equal direct octonion multiplication:
+    out[o,k] = sum_i sum_{a,b: index[a,b]=k} sign[a,b] * w[o,i,a] * x[i,b]."""
+    torch.manual_seed(0)
+    layer = OctonionLinear(16, 24, bias=True)
+    x = torch.randn(3, 5, 16)
+
+    ref = torch.zeros(3, 5, layer.out_oct, 8)
+    x_oct = x.view(3, 5, layer.in_oct, 8)
+    for a in range(8):
+        for b in range(8):
+            k = OCTONION_INDEX[a, b].item()
+            s = OCTONION_SIGN[a, b].item()
+            ref[..., :, k] += s * torch.einsum(
+                'oi,...i->...o', layer.weight[:, :, a], x_oct[..., b]
+            )
+    ref = ref.view(3, 5, 24) + layer.bias
+
+    assert torch.allclose(layer(x), ref, atol=1e-5)
+
+
+def test_identity_octonion_weight_is_identity_map():
+    """Weight = e0 on a single 8-dim block must reproduce the input."""
+    layer = OctonionLinear(8, 8, bias=False)
+    with torch.no_grad():
+        layer.weight.zero_()
+        layer.weight[0, 0, 0] = 1.0
+    x = torch.randn(4, 8)
+    assert torch.allclose(layer(x), x, atol=1e-6)
+
+
 def test_forward_shape_and_stability():
     layer = OctonionLinear(512, 512)
     x = torch.randn(2, 16, 512)

@@ -17,6 +17,7 @@ Hard reset (0.0 / reset_persistent_state) is reserved for genuine
 conversation boundaries, e.g. between dialogue episodes.
 """
 
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Dict, Iterator, List, Optional
@@ -33,8 +34,26 @@ def is_doc_header(line: str) -> bool:
     return bool(_DOC_HEADER_RE.match(line.strip()))
 
 
-def get_tokenizer(name: str = "gpt2"):
-    """GPT-2 BPE tokenizer — vocab_size=50257, matching the model default."""
+def get_tokenizer(name: str = "gpt2", local_dir: Optional[str] = None):
+    """GPT-2 BPE tokenizer — vocab_size=50257, matching the model default.
+
+    If `local_dir` (or env GPT2_TOKENIZER_DIR) holds vocab.json + merges.txt,
+    builds the tokenizer offline — no Hugging Face Hub access needed.
+    """
+    local_dir = local_dir or os.environ.get("GPT2_TOKENIZER_DIR")
+    if local_dir:
+        from tokenizers import Tokenizer
+        from tokenizers.models import BPE
+        from tokenizers.pre_tokenizers import ByteLevel
+        from tokenizers.decoders import ByteLevel as ByteLevelDecoder
+        from transformers import GPT2TokenizerFast
+        bpe = Tokenizer(BPE.from_file(
+            os.path.join(local_dir, "vocab.json"),
+            os.path.join(local_dir, "merges.txt"),
+        ))
+        bpe.pre_tokenizer = ByteLevel(add_prefix_space=False)  # GPT-2 regex + byte level
+        bpe.decoder       = ByteLevelDecoder()
+        return GPT2TokenizerFast(tokenizer_object=bpe)
     from transformers import GPT2TokenizerFast
     return GPT2TokenizerFast.from_pretrained(name)
 
@@ -62,8 +81,30 @@ def tokens_from_lines(lines, tokenizer):
     return tokens, doc_starts
 
 
-def load_wikitext2_tokens(split: str = "train", tokenizer=None):
-    """Tokenize WikiText-2 (raw) into one long stream. See tokens_from_lines."""
+_LOCAL_SPLIT_FILES = {"train": "train.txt", "validation": "valid.txt", "test": "test.txt"}
+
+
+def load_wikitext2_tokens(split: str = "train", tokenizer=None,
+                          data_dir: Optional[str] = None):
+    """Tokenize WikiText-2 into one long stream. See tokens_from_lines.
+
+    If `data_dir` (or env WIKITEXT2_DIR) holds train.txt/valid.txt/test.txt,
+    reads them directly — no Hugging Face Hub access needed. Tokenized
+    streams are cached next to the source file (<split>.tokens.pt).
+    """
+    data_dir = data_dir or os.environ.get("WIKITEXT2_DIR")
+    if data_dir:
+        path = os.path.join(data_dir, _LOCAL_SPLIT_FILES[split])
+        cache = path + ".tokens.pt"
+        if os.path.exists(cache):
+            blob = torch.load(cache, weights_only=True)
+            return blob["tokens"], blob["doc_starts"]
+        with open(path, encoding="utf-8") as f:
+            lines = f.readlines()
+        tokens, doc_starts = tokens_from_lines(lines, tokenizer or get_tokenizer())
+        torch.save({"tokens": tokens, "doc_starts": doc_starts}, cache)
+        return tokens, doc_starts
+
     from datasets import load_dataset
     ds = load_dataset("wikitext", "wikitext-2-raw-v1", split=split)
     return tokens_from_lines(ds["text"], tokenizer or get_tokenizer())

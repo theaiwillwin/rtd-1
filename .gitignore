@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.pt
 *.bin
+data/
 checkpoints/*
 !checkpoints/.gitkeep
 fpga_weights/*

@@ -41,6 +41,10 @@ class HammingEmbedding(nn.Module):
         self.dim         = dim
         self.n_groups    = dim // 4
         self.base_embed  = nn.Embedding(vocab_size, dim)
+        # GPT-2-scale init. The lm_head is weight-tied to this table, so the
+        # default N(0,1) init blows logits up to ~95 cross-entropy at init;
+        # std=0.02 lands at the expected ln(vocab_size) ~ 10.8.
+        nn.init.normal_(self.base_embed.weight, std=0.02)
         self.encode_proj = nn.Linear(7, 4, bias=False)
         self.register_buffer("G_mat", self.G)
         self.register_buffer("H_mat", self.H)
