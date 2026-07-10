@@ -59,6 +59,29 @@ python python\model\octonion.py    # compression ~7.9x
 python python\model\hamming.py     # syndrome magnitude prints cleanly
 ```
 
-All 19 tests should pass. Note for `test_lorentz.py`: the expmap0/logmap0
+All tests should pass. Note for `test_lorentz.py`: the expmap0/logmap0
 round-trip only holds for inputs with norm <= MAX_TANGENT_NORM (2.0) —
 larger inputs are clamped by design, not a bug.
+
+## 6. Training
+
+Full run with the established hyperparameters (WikiText-2 + GPT-2
+tokenizer download from Hugging Face happens on first use):
+
+```powershell
+python python\training\train.py                # 10k steps, curvature 0.1 -> 2.0
+python python\training\train.py --wandb        # same, logged to W&B project cwd-phft
+```
+
+Offline smoke test (synthetic data, no downloads):
+
+```powershell
+python python\training\train.py --dataset synthetic --steps 20 `
+  --dim 64 --num-layers 2 --num-heads 4 --mem-size 16 `
+  --vocab-size 1000 --batch-size 2 --seq-len 32
+```
+
+Checkpoints land in `checkpoints\` (gitignored). Note: the WikiText-2
+path could not be network-verified in the cloud bootstrap session
+(huggingface.co is blocked by its proxy policy); the tokenization and
+batching logic is covered offline by `python\tests\test_data.py`.
