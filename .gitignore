@@ -12,3 +12,4 @@ fpga_weights/*
 *.egg-info/
 .mypy_cache/
 .pytest_cache/
+training.log
