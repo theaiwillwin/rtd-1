@@ -65,6 +65,16 @@ larger inputs are clamped by design, not a bug.
 
 ## 6. Training
 
+**One command** — creates the venv, installs CUDA 11.8 torch, downloads
+data from GitHub mirrors, and launches (or resumes) the full run:
+
+```powershell
+.\run_local.ps1                      # full 10k-step run on your GPU
+.\run_local.ps1 --wandb              # extra args pass through to train.py
+```
+
+Or manually:
+
 Full run with the established hyperparameters (WikiText-2 + GPT-2
 tokenizer download from Hugging Face happens on first use):
 
